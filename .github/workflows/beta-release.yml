@@ -1,0 +1,104 @@
+name: Beta Release
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "CHANGELOG.md"
+      - ".release-please-manifest.json"
+
+permissions:
+  contents: write
+
+jobs:
+  beta-release:
+    runs-on: ubuntu-latest
+    # Skip if this is a release-please PR merge (version bump commit)
+    if: "!startsWith(github.event.head_commit.message, 'chore(main): release')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Calculate beta version
+        id: version
+        run: |
+          CURRENT_VERSION=$(node -p "require('./manifest.json').version")
+          LAST_TAG=$(git tag -l '[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1)
+
+          if [ -z "$LAST_TAG" ]; then
+            COMMIT_COUNT=$(git rev-list --count HEAD)
+          else
+            COMMIT_COUNT=$(git rev-list --count ${LAST_TAG}..HEAD)
+          fi
+
+          if [ "$LAST_TAG" = "$CURRENT_VERSION" ]; then
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+            NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          else
+            NEXT_VERSION="$CURRENT_VERSION"
+          fi
+
+          BETA_VERSION="${NEXT_VERSION}-beta.${COMMIT_COUNT}"
+          echo "beta_version=$BETA_VERSION" >> $GITHUB_OUTPUT
+          echo "Beta version: $BETA_VERSION (commits since $LAST_TAG: $COMMIT_COUNT)"
+
+      - name: Update manifest for beta
+        env:
+          BETA_VERSION: ${{ steps.version.outputs.beta_version }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const manifest = require('./manifest.json');
+            manifest.version = process.env.BETA_VERSION;
+            fs.writeFileSync('manifest.json', JSON.stringify(manifest, null, 2) + '\n');
+          "
+
+      - name: Create beta release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BETA_VERSION: ${{ steps.version.outputs.beta_version }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          BETA_TAG="beta"
+
+          if gh release view "$BETA_TAG" &>/dev/null; then
+            echo "Deleting old beta release..."
+            gh release delete "$BETA_TAG" --yes --cleanup-tag
+          fi
+
+          git tag -d "$BETA_TAG" 2>/dev/null || true
+
+          BUILD_TIME=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
+
+          echo "Creating fresh beta release..."
+          gh release create "$BETA_TAG" \
+            --title "Beta: $BETA_VERSION" \
+            --notes "Latest beta build from main branch.
+
+          **Version:** \`$BETA_VERSION\`
+          **Commit:** \`$COMMIT_SHA\`
+          **Built:** $BUILD_TIME
+
+          ---
+
+          This is a pre-release build. It may contain bugs or incomplete features.
+
+          To install via BRAT: Add \`cameronsjo/obsidi-mcp\` and enable beta versions." \
+            --prerelease \
+            main.js \
+            manifest.json \
+            styles.css
