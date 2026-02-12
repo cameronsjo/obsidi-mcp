@@ -1,0 +1,10 @@
+{
+  "id": "obsidi-mcp",
+  "name": "Obsidi MCP",
+  "version": "0.1.0",
+  "minAppVersion": "1.0.0",
+  "description": "Expose Obsidian vault tools via Model Context Protocol (MCP) server",
+  "author": "Cameron",
+  "authorUrl": "https://github.com/cameronsjo",
+  "isDesktopOnly": true
+}

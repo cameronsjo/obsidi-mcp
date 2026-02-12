@@ -1,0 +1,33 @@
+{
+  "name": "obsidi-mcp",
+  "version": "0.1.0",
+  "description": "Expose Obsidian vault tools via Model Context Protocol (MCP) server",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "obsidian",
+    "mcp",
+    "model-context-protocol",
+    "tools"
+  ],
+  "author": "Cameron",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.19.7",
+    "builtin-modules": "^4.0.0",
+    "esbuild": "^0.27.2",
+    "obsidian": "^1.7.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.0.16"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.1",
+    "express": "^5.2.1"
+  }
+}

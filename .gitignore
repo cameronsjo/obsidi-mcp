@@ -1,0 +1,23 @@
+# Build output
+main.js
+
+# Obsidian plugin
+data.json
+
+# Node
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# TypeScript
+*.js.map
+*.tsbuildinfo
+
+# Test
+coverage/
