@@ -165,10 +165,7 @@ The HTTP/SSE server binds to `localhost` with **no authentication, no TLS, and n
 
 **Do not expose the server to a network without a secured reverse proxy.** Anyone who can reach the HTTP port has full read/write access to your vault.
 
-If you need remote access:
-
-- Place the server behind an authenticating reverse proxy (e.g., Caddy, nginx, Cloudflare Tunnel)
-- Use stdio transport instead — it has no network surface at all
+If you need remote access, place the server behind an authenticating reverse proxy (e.g., Caddy, nginx, Cloudflare Tunnel).
 
 ## Troubleshooting
 
