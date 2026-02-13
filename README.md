@@ -159,6 +159,17 @@ obsidi-mcp
     └── External providers (layer 3, last wins)
 ```
 
+## Security
+
+The HTTP/SSE server binds to `localhost` with **no authentication, no TLS, and no access control**. It is designed for local-only use by MCP clients running on the same machine.
+
+**Do not expose the server to a network without a secured reverse proxy.** Anyone who can reach the HTTP port has full read/write access to your vault.
+
+If you need remote access:
+
+- Place the server behind an authenticating reverse proxy (e.g., Caddy, nginx, Cloudflare Tunnel)
+- Use stdio transport instead — it has no network surface at all
+
 ## Troubleshooting
 
 ### Server not starting
