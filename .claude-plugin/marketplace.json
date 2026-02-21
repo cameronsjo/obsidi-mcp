@@ -1,0 +1,15 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "obsidian-mcp",
+  "owner": {
+    "name": "Cameron Sjo",
+    "github": "cameronsjo"
+  },
+  "plugins": [
+    {
+      "name": "obsidian-mcp",
+      "source": "./.claude-plugin",
+      "description": "Obsidian plugin exposing 28+ vault tools via MCP server"
+    }
+  ]
+}

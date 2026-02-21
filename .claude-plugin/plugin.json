@@ -1,0 +1,7 @@
+{
+  "name": "obsidian-mcp",
+  "description": "Obsidian plugin exposing 28+ vault tools via MCP server",
+  "author": {
+    "name": "cameronsjo"
+  }
+}
