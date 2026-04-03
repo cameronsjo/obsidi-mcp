@@ -1,5 +1,5 @@
-import type { App, TFile, TFolder } from 'obsidian';
-import { TAbstractFile } from 'obsidian';
+import type { App } from 'obsidian';
+import { TAbstractFile, TFile, TFolder } from 'obsidian';
 import type { ToolDefinition, ToolExecutionContext } from './types';
 
 /**
