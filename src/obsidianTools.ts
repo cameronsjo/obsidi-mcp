@@ -4,7 +4,7 @@ import type { ToolDefinition, ToolExecutionContext } from './types';
 
 /**
  * Duck-type interfaces for RAG service compatibility.
- * obsidian-mcp ships without RAG — these allow compilation.
+ * obsidi-mcp ships without RAG — these allow compilation.
  * When obsidi-claude registers as a tool provider, its RAG-enhanced tools override these.
  */
 
