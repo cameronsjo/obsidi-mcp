@@ -1,5 +1,5 @@
 ---
-name: obsidi-mcp:onboard
+name: onboard
 description: "Get started with obsidi-mcp — what it is, how to set it up, and how to use it"
 ---
 
