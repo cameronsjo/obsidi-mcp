@@ -1,23 +1,25 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-  ListResourcesRequestSchema,
-  ListResourceTemplatesRequestSchema,
-  ReadResourceRequestSchema,
-  SubscribeRequestSchema,
-  UnsubscribeRequestSchema,
-  CompleteRequestSchema,
-  RootsListChangedNotificationSchema,
+  createMcpHandler,
   isInitializeRequest,
+  isLegacyRequest,
+  Server,
   type CallToolResult,
-} from '@modelcontextprotocol/sdk/types.js';
+  type ElicitRequestFormParams,
+  type LoggingLevel,
+  type ListToolsResult,
+  type McpHttpHandler,
+} from '@modelcontextprotocol/server';
+import { serveStdio, type StdioServerHandle } from '@modelcontextprotocol/server/stdio';
+import {
+  NodeStreamableHTTPServerTransport,
+  toNodeHandler,
+  toWebRequest,
+} from '@modelcontextprotocol/node';
+import { SSEServerTransport } from '@modelcontextprotocol/server-legacy/sse';
 import express, { type Express, type Request, type Response } from 'express';
 import type { Server as HttpServer } from 'http';
 import type { ToolDefinition, ToolExecutionContext, MCPServerConfig } from './types';
+import { httpSecurityMiddleware } from './httpSecurity';
 import type { VaultResources } from './vaultResources';
 import { createLogger, Logger, type LogEntry, type LogLevel } from './logger';
 
@@ -26,9 +28,14 @@ const log = createLogger('MCPServer');
 const DEFAULT_SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const DEFAULT_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_MAX_SESSIONS = 100;
+const DEFAULT_BIND_HOST = '127.0.0.1';
+
+function getBindHost(): string {
+  return process.env.MCP_BIND_HOST?.trim() || DEFAULT_BIND_HOST;
+}
 
 interface SessionTransport {
-  transport: StreamableHTTPServerTransport;
+  transport: NodeStreamableHTTPServerTransport;
   server: Server;
   lastActivityTime: number;
 }
@@ -50,7 +57,9 @@ interface SSESession {
  */
 export class MCPServer {
   private stdioServer: Server | null = null;
-  private stdioTransport: StdioServerTransport | null = null;
+  private stdioHandle: StdioServerHandle | null = null;
+  private stdioServers: Set<Server> = new Set();
+  private modernStdioServers: Set<Server> = new Set();
   private httpApp: Express | null = null;
   private httpServer: HttpServer | null = null;
   private httpSessions: Map<string, SessionTransport> = new Map();
@@ -63,13 +72,15 @@ export class MCPServer {
   private getToolDefinitions: () => ToolDefinition[];
   private config: MCPServerConfig;
   private isRunning = false;
+  private modernHandler: McpHttpHandler | null = null;
+  private modernNodeHandler: ReturnType<typeof toNodeHandler> | null = null;
   private unsubscribeLogSink: (() => void) | null = null;
   private unsubscribeVaultChange: (() => void) | null = null;
   /** URIs subscribed by clients → set of Server instances watching them */
   private resourceSubscriptions: Map<string, Set<Server>> = new Map();
 
   /** Map our log levels to MCP RFC 5424 levels */
-  private static readonly LOG_LEVEL_MAP: Record<LogLevel, string> = {
+  private static readonly LOG_LEVEL_MAP: Record<LogLevel, LoggingLevel> = {
     debug: 'debug',
     info: 'info',
     warn: 'warning',
@@ -142,6 +153,10 @@ export class MCPServer {
             server.sendResourceUpdated({ uri }).catch(() => {});
           }
         }
+        for (const server of this.modernStdioServers) {
+          server.sendResourceUpdated({ uri }).catch(() => {});
+        }
+        this.modernHandler?.notify.resourceUpdated(uri);
 
         // On rename, also notify subscribers of the old URI
         if (event === 'rename' && oldPath) {
@@ -152,6 +167,10 @@ export class MCPServer {
               server.sendResourceUpdated({ uri: oldUri }).catch(() => {});
             }
           }
+          for (const server of this.modernStdioServers) {
+            server.sendResourceUpdated({ uri: oldUri }).catch(() => {});
+          }
+          this.modernHandler?.notify.resourceUpdated(oldUri);
         }
 
         // On create/delete/rename, the resource list changed
@@ -159,6 +178,7 @@ export class MCPServer {
           for (const server of this.getActiveServers()) {
             server.sendResourceListChanged().catch(() => {});
           }
+          this.modernHandler?.notify.resourcesChanged();
         }
       });
 
@@ -180,6 +200,7 @@ export class MCPServer {
     for (const server of this.getActiveServers()) {
       server.sendToolListChanged().catch(() => {});
     }
+    this.modernHandler?.notify.toolsChanged();
   }
 
   /**
@@ -188,18 +209,26 @@ export class MCPServer {
   private async startStdioServer(): Promise<void> {
     log.debug('Starting stdio transport');
 
-    this.stdioServer = new Server(
-      { name: this.config.name, version: this.config.version },
-      { capabilities: { tools: { listChanged: true }, resources: { subscribe: true, listChanged: true }, completions: {}, elicitation: {}, logging: {} } }
+    this.stdioHandle = serveStdio(
+      (context) => {
+        const server = this.createMcpServer(context.era);
+        const previousOnClose = server.onclose;
+        server.onclose = () => {
+          this.stdioServers.delete(server);
+          this.modernStdioServers.delete(server);
+          previousOnClose?.();
+        };
+        this.stdioServers.add(server);
+        if (context.era === 'modern') this.modernStdioServers.add(server);
+        this.stdioServer = server;
+        return server;
+      },
+      {
+        legacy: 'serve',
+        maxSubscriptions: 16,
+        onerror: (error) => log.error('Stdio transport error', error),
+      },
     );
-
-    this.setupServerHandlers(this.stdioServer);
-
-    this.stdioTransport = new StdioServerTransport();
-    await this.stdioServer.connect(this.stdioTransport);
-
-    // Query client roots after connection (best-effort)
-    this.logClientRoots(this.stdioServer).catch(() => {});
 
     log.info('Stdio transport started');
   }
@@ -209,6 +238,7 @@ export class MCPServer {
    */
   private async startHttpServer(): Promise<void> {
     log.debug('Starting HTTP transport', { port: this.config.httpPort });
+    const bindHost = getBindHost();
 
     // Load stale session IDs from before last restart (enables hot reload recovery)
     if (this.config.sessionPersistence) {
@@ -218,11 +248,27 @@ export class MCPServer {
       }
     }
 
-    this.httpApp = express();
-    this.httpApp.use(express.json());
+    this.modernHandler = createMcpHandler(
+      (context) => this.createMcpServer(context.era),
+      {
+        legacy: 'reject',
+        maxSubscriptions: 16,
+        onerror: (error) => log.error('Modern HTTP transport error', error),
+      },
+    );
+    this.modernNodeHandler = toNodeHandler(this.modernHandler, {
+      onerror: (error) => log.error('Modern HTTP adapter error', error),
+    });
+
+    const httpApp = express();
+    this.httpApp = httpApp;
+    httpApp.use(httpSecurityMiddleware(this.config.httpPort));
+    // Keep the existing 100 KiB Express JSON boundary. The SDK adapter also
+    // receives the parsed body, so its larger internal default never bypasses it.
+    httpApp.use(express.json({ limit: '100kb' }));
 
     // Health check endpoint
-    this.httpApp.get('/health', (_req: Request, res: Response) => {
+    httpApp.get('/health', (_req: Request, res: Response) => {
       res.json({
         status: 'ok',
         name: this.config.name,
@@ -231,25 +277,26 @@ export class MCPServer {
       });
     });
 
-    // MCP endpoint - handles POST, GET, DELETE for session management
-    this.httpApp.post('/mcp', async (req: Request, res: Response) => {
+    // MCP endpoint - routes modern stateless requests and legacy session traffic.
+    httpApp.post('/mcp', async (req: Request, res: Response) => {
       await this.handleMcpRequest(req, res);
     });
 
-    this.httpApp.get('/mcp', async (req: Request, res: Response) => {
+    httpApp.get('/mcp', async (req: Request, res: Response) => {
       await this.handleMcpRequest(req, res);
     });
 
-    this.httpApp.delete('/mcp', async (req: Request, res: Response) => {
+    httpApp.delete('/mcp', async (req: Request, res: Response) => {
       await this.handleMcpRequest(req, res);
     });
 
     // Start listening
     await new Promise<void>((resolve, reject) => {
       try {
-        this.httpServer = this.httpApp!.listen(this.config.httpPort, () => {
+        this.httpServer = httpApp.listen(this.config.httpPort, bindHost, () => {
           log.info('HTTP transport started', {
             port: this.config.httpPort,
+            bindHost,
             url: `http://localhost:${this.config.httpPort}/mcp`,
           });
           resolve();
@@ -276,12 +323,15 @@ export class MCPServer {
    */
   private async startSseServer(): Promise<void> {
     log.debug('Starting SSE transport (deprecated)', { port: this.config.httpPort });
+    const bindHost = getBindHost();
 
-    this.sseApp = express();
-    this.sseApp.use(express.json());
+    const sseApp = express();
+    this.sseApp = sseApp;
+    sseApp.use(httpSecurityMiddleware(this.config.httpPort));
+    sseApp.use(express.json({ limit: '100kb' }));
 
     // Health check endpoint
-    this.sseApp.get('/health', (_req: Request, res: Response) => {
+    sseApp.get('/health', (_req: Request, res: Response) => {
       res.json({
         status: 'ok',
         name: this.config.name,
@@ -292,15 +342,17 @@ export class MCPServer {
     });
 
     // SSE endpoint - client establishes connection here
-    this.sseApp.get('/sse', async (req: Request, res: Response) => {
+    sseApp.get('/sse', async (req: Request, res: Response) => {
       log.info('SSE connection request received');
 
       const transport = new SSEServerTransport('/messages', res);
-      const server = this.createMcpServer();
+      const server = this.createMcpServer('legacy');
 
       await server.connect(transport);
 
-      const sessionId = crypto.randomUUID();
+      // SSEServerTransport owns the session ID. Do not generate a second ID;
+      // clients post to the ID advertised by the transport.
+      const sessionId = transport.sessionId;
       this.sseSessions.set(sessionId, { transport, server });
 
       log.info('SSE session established', { sessionId, activeSessions: this.sseSessions.size });
@@ -308,13 +360,15 @@ export class MCPServer {
 
       // Clean up on connection close
       req.on('close', () => {
+        this.removeResourceSubscriptions(server);
         this.sseSessions.delete(sessionId);
+        server.close().catch(() => {});
         log.info('SSE session closed', { sessionId, activeSessions: this.sseSessions.size });
       });
     });
 
     // Messages endpoint - client sends messages here
-    this.sseApp.post('/messages', async (req: Request, res: Response) => {
+    sseApp.post('/messages', async (req: Request, res: Response) => {
       const sessionId = req.query.sessionId as string | undefined;
 
       if (!sessionId || !this.sseSessions.has(sessionId)) {
@@ -336,9 +390,10 @@ export class MCPServer {
     // Start listening
     await new Promise<void>((resolve, reject) => {
       try {
-        this.sseServer = this.sseApp!.listen(this.config.httpPort, () => {
+        this.sseServer = sseApp.listen(this.config.httpPort, bindHost, () => {
           log.info('SSE transport started', {
             port: this.config.httpPort,
+            bindHost,
             sseUrl: `http://localhost:${this.config.httpPort}/sse`,
             messagesUrl: `http://localhost:${this.config.httpPort}/messages`,
           });
@@ -362,6 +417,34 @@ export class MCPServer {
    * Handle incoming MCP requests over HTTP
    */
   private async handleMcpRequest(req: Request, res: Response): Promise<void> {
+    try {
+      const request = await toWebRequest(req, req.body);
+      if (await isLegacyRequest(request)) {
+        await this.handleLegacyRequest(req, res);
+        return;
+      }
+
+      if (!this.modernNodeHandler) {
+        throw new Error('Modern HTTP handler is not initialized');
+      }
+      await this.modernNodeHandler(req, res, req.body);
+    } catch (error) {
+      log.error('Error routing MCP request', error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32603,
+            message: error instanceof Error ? error.message : 'Internal error',
+          },
+          id: null,
+        });
+      }
+    }
+  }
+
+  /** Handle the retained 2025 sessionful Streamable HTTP transport. */
+  private async handleLegacyRequest(req: Request, res: Response): Promise<void> {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
     try {
@@ -465,15 +548,19 @@ export class MCPServer {
   }): Promise<void> {
     const { sessionIdGenerator, logMessage, req, res } = options;
 
-    const transport = new StreamableHTTPServerTransport({
+    // Store the same Server instance that is connected below. Constructing a
+    // second instance inside onsessioninitialized leaves the tracked server
+    // disconnected and breaks notifications/elicitation for that session.
+    const server = this.createMcpServer('legacy');
+    const transport = new NodeStreamableHTTPServerTransport({
       sessionIdGenerator,
       onsessioninitialized: (id: string) => {
-        const server = this.createMcpServer();
         this.httpSessions.set(id, { transport, server, lastActivityTime: Date.now() });
         log.info(logMessage, { sessionId: id, activeSessions: this.httpSessions.size });
         this.logClientRoots(server).catch(() => {});
       },
       onsessionclosed: (id: string) => {
+        this.removeResourceSubscriptions(server);
         this.httpSessions.delete(id);
         log.info('HTTP session closed', { sessionId: id });
       },
@@ -481,11 +568,11 @@ export class MCPServer {
 
     transport.onclose = () => {
       if (transport.sessionId) {
+        this.removeResourceSubscriptions(server);
         this.httpSessions.delete(transport.sessionId);
       }
     };
 
-    const server = this.createMcpServer();
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   }
@@ -493,12 +580,27 @@ export class MCPServer {
   /**
    * Create a new MCP server instance with handlers configured
    */
-  private createMcpServer(): Server {
+  private createMcpServer(era: 'legacy' | 'modern'): Server {
+    const capabilities = era === 'legacy'
+      ? {
+          tools: { listChanged: true },
+          resources: { subscribe: true, listChanged: true },
+          completions: {},
+          elicitation: {},
+          logging: {},
+        }
+      : {
+          tools: { listChanged: true },
+          // Modern subscriptions/listen uses the handler's bounded event bus,
+          // but still advertises the resource filter it can honor.
+          resources: { subscribe: true, listChanged: true },
+          completions: {},
+        };
     const server = new Server(
       { name: this.config.name, version: this.config.version },
-      { capabilities: { tools: { listChanged: true }, resources: { subscribe: true, listChanged: true }, completions: {}, elicitation: {}, logging: {} } }
+      { capabilities }
     );
-    this.setupServerHandlers(server);
+    this.setupServerHandlers(server, era);
     return server;
   }
 
@@ -545,6 +647,7 @@ export class MCPServer {
         } catch {
           // Ignore close errors
         }
+        this.removeResourceSubscriptions(session.server);
         this.httpSessions.delete(sessionId);
         log.info('Expired session cleaned up', { sessionId, idleTimeMs: now - session.lastActivityTime });
       }
@@ -555,10 +658,19 @@ export class MCPServer {
     }
   }
 
+  /** Remove a disconnected legacy server from resource subscription fan-out. */
+  private removeResourceSubscriptions(server: Server): void {
+    for (const [uri, subscribers] of this.resourceSubscriptions) {
+      subscribers.delete(server);
+      if (subscribers.size === 0) {
+        this.resourceSubscriptions.delete(uri);
+      }
+    }
+  }
+
   /** Collect all active Server instances for broadcasting (logging, notifications) */
   private getActiveServers(): Server[] {
-    const servers: Server[] = [];
-    if (this.stdioServer) servers.push(this.stdioServer);
+    const servers: Server[] = Array.from(this.stdioServers);
     for (const session of this.httpSessions.values()) {
       servers.push(session.server);
     }
@@ -572,7 +684,15 @@ export class MCPServer {
    * Stop the MCP server
    */
   async stop(): Promise<void> {
-    if (!this.isRunning) {
+    const hasStartedResources =
+      this.isRunning ||
+      this.stdioHandle !== null ||
+      this.modernHandler !== null ||
+      this.httpServer !== null ||
+      this.sseServer !== null ||
+      this.httpSessions.size > 0 ||
+      this.sseSessions.size > 0;
+    if (!hasStartedResources) {
       return;
     }
 
@@ -593,11 +713,21 @@ export class MCPServer {
       // Stop cleanup interval
       this.stopCleanupInterval();
 
-      // Stop stdio server
-      if (this.stdioServer) {
-        await this.stdioServer.close();
-        this.stdioServer = null;
-        this.stdioTransport = null;
+      // Stop the official stdio serving entry and its per-connection servers.
+      if (this.stdioHandle) {
+        await this.stdioHandle.close();
+        this.stdioHandle = null;
+      }
+      this.stdioServers.clear();
+      this.modernStdioServers.clear();
+      this.stdioServer = null;
+
+      // Stop modern stateless serving. This aborts in-flight modern exchanges
+      // and closes their per-request server instances.
+      if (this.modernHandler) {
+        await this.modernHandler.close();
+        this.modernHandler = null;
+        this.modernNodeHandler = null;
       }
 
       // Stop HTTP server and close all sessions
@@ -612,6 +742,7 @@ export class MCPServer {
         // Close all active sessions
         for (const [sessionId, session] of this.httpSessions) {
           try {
+            this.removeResourceSubscriptions(session.server);
             await session.server.close();
           } catch {
             log.debug('Error closing session', { sessionId });
@@ -630,6 +761,7 @@ export class MCPServer {
       if (this.sseServer) {
         for (const [sessionId, session] of this.sseSessions) {
           try {
+            this.removeResourceSubscriptions(session.server);
             await session.server.close();
           } catch {
             log.debug('Error closing SSE session', { sessionId });
@@ -674,9 +806,9 @@ export class MCPServer {
   /**
    * Setup request handlers for a server instance
    */
-  private setupServerHandlers(server: Server): void {
+  private setupServerHandlers(server: Server, era: 'legacy' | 'modern'): void {
     // Handle tool listing — calls getToolDefinitions() callback each time (dynamic)
-    server.setRequestHandler(ListToolsRequestSchema, async () => {
+    server.setRequestHandler('tools/list', async (): Promise<ListToolsResult> => {
       const toolDefs = this.getToolDefinitions();
       log.debug('Listing tools', { count: toolDefs.length });
 
@@ -684,13 +816,13 @@ export class MCPServer {
         tools: toolDefs.map((tool) => ({
           name: tool.name,
           description: tool.description,
-          inputSchema: tool.parameters,
+          inputSchema: tool.parameters as ListToolsResult['tools'][number]['inputSchema'],
         })),
       };
     });
 
     // Handle tool calls — dispatches to the matching ToolDefinition handler directly
-    server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
+    server.setRequestHandler('tools/call', async (request): Promise<CallToolResult> => {
       const { name, arguments: args } = request.params;
       log.info('Tool call received', { tool: name });
 
@@ -704,9 +836,18 @@ export class MCPServer {
         };
       }
 
-      const context: ToolExecutionContext = {
-        elicitInput: (params) => server.elicitInput(params),
-      };
+      const context: ToolExecutionContext = {};
+      if (era === 'legacy') {
+        context.elicitInput = (params: ElicitRequestFormParams) => server.elicitInput(params);
+      } else {
+        // The 2026-07-28 protocol removed push-style server→client requests.
+        // Until these destructive tools are migrated to the new MRTR
+        // inputRequired flow, expose an explicit fail-closed callback so a
+        // modern request can never fall through to the mutation.
+        context.elicitInput = async () => {
+          throw new Error('User confirmation is unavailable on modern MCP transport');
+        };
+      }
 
       try {
         const result = await toolDef.handler((args as Record<string, unknown>) || {}, context);
@@ -728,7 +869,7 @@ export class MCPServer {
 
     // --- Resource handlers (use VaultResources directly) ---
 
-    server.setRequestHandler(ListResourcesRequestSchema, async () => {
+    server.setRequestHandler('resources/list', async () => {
       const notes = this.vaultResources.listNotes();
       log.debug('Listing resources', { count: notes.length });
 
@@ -741,7 +882,7 @@ export class MCPServer {
       };
     });
 
-    server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
+    server.setRequestHandler('resources/templates/list', async () => {
       return {
         resourceTemplates: [
           {
@@ -754,7 +895,7 @@ export class MCPServer {
       };
     });
 
-    server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    server.setRequestHandler('resources/read', async (request) => {
       const { uri } = request.params;
       const match = uri.match(/^vault:\/\/note\/(.+)$/);
       if (!match) {
@@ -774,32 +915,36 @@ export class MCPServer {
       };
     });
 
-    // --- Subscription handlers ---
+    // --- Legacy subscription handlers ---
+    // Modern 2026-07-28 subscriptions/listen is owned by createMcpHandler's
+    // bounded event bus. Keep the old resources/subscribe methods only for
+    // stateful legacy clients.
+    if (era === 'legacy') {
+      server.setRequestHandler('resources/subscribe', async (request) => {
+        const { uri } = request.params;
+        if (!this.resourceSubscriptions.has(uri)) {
+          this.resourceSubscriptions.set(uri, new Set());
+        }
+        this.resourceSubscriptions.get(uri)!.add(server);
+        log.debug('Resource subscription added', { uri, subscribers: this.resourceSubscriptions.get(uri)!.size });
+        return {};
+      });
 
-    server.setRequestHandler(SubscribeRequestSchema, async (request) => {
-      const { uri } = request.params;
-      if (!this.resourceSubscriptions.has(uri)) {
-        this.resourceSubscriptions.set(uri, new Set());
-      }
-      this.resourceSubscriptions.get(uri)!.add(server);
-      log.debug('Resource subscription added', { uri, subscribers: this.resourceSubscriptions.get(uri)!.size });
-      return {};
-    });
-
-    server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
-      const { uri } = request.params;
-      const subscribers = this.resourceSubscriptions.get(uri);
-      if (subscribers) {
-        subscribers.delete(server);
-        if (subscribers.size === 0) this.resourceSubscriptions.delete(uri);
-      }
-      log.debug('Resource subscription removed', { uri });
-      return {};
-    });
+      server.setRequestHandler('resources/unsubscribe', async (request) => {
+        const { uri } = request.params;
+        const subscribers = this.resourceSubscriptions.get(uri);
+        if (subscribers) {
+          subscribers.delete(server);
+          if (subscribers.size === 0) this.resourceSubscriptions.delete(uri);
+        }
+        log.debug('Resource subscription removed', { uri });
+        return {};
+      });
+    }
 
     // --- Completion handler ---
 
-    server.setRequestHandler(CompleteRequestSchema, async (request) => {
+    server.setRequestHandler('completion/complete', async (request) => {
       const { ref, argument } = request.params;
 
       // Complete vault note paths for resource template references
@@ -814,7 +959,7 @@ export class MCPServer {
 
     // --- Roots change notification ---
 
-    server.setNotificationHandler(RootsListChangedNotificationSchema, async () => {
+    server.setNotificationHandler('notifications/roots/list_changed', async () => {
       await this.logClientRoots(server);
     });
   }

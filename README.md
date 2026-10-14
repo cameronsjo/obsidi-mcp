@@ -14,7 +14,7 @@ Expose Obsidian vault tools via Model Context Protocol (MCP) server.
 ## Requirements
 
 - Obsidian Desktop (not mobile - uses Node.js features)
-- Node.js 18+
+- Node.js 20+ (required by MCP SDK v2)
 - For CLI bridge: Obsidian CLI v1.12+
 
 ## Installation
@@ -36,6 +36,9 @@ cd obsidi-mcp
 npm install
 npm run build
 
+# Exercise the delivered main.js bundle with an in-memory Obsidian host
+npm run test:smoke
+
 # For development with auto-rebuild
 npm run dev
 ```
@@ -49,6 +52,17 @@ ln -sfn /path/to/obsidi-mcp /path/to/vault/.obsidian/plugins/obsidi-mcp
 ```
 
 ## Usage
+
+HTTP supports stateless MCP protocol `2026-07-28` and keeps legacy HTTP/SSE
+clients working. Both protocol eras are supported over stdio. Modern notification
+subscriptions are capped at 16 streams. `delete` and `sync_restore` still require
+legacy elicitation: modern calls refuse these actions until the new multi-round-trip
+confirmation flow is implemented. Legacy confirmation is client-mediated and is not
+an authentication boundary against a hostile client.
+
+The smoke probe loads the built plugin and lists its tools over real HTTP; it
+also checks modern stateless metadata and legacy confirmation against an in-memory
+vault. It does not replace testing inside the Obsidian application.
 
 1. Enable the plugin in Obsidian Settings > Community Plugins
 2. Configure transport (stdio, HTTP, or SSE) in plugin settings
@@ -161,7 +175,22 @@ obsidi-mcp
 
 ## Security
 
-The HTTP/SSE server binds to `localhost` with **no authentication, no TLS, and no access control**. It is designed for local-only use by MCP clients running on the same machine.
+The HTTP/SSE servers bind to `127.0.0.1` by default and validate `Host` and `Origin`
+before parsing a request or routing it to MCP. The default allowlist accepts only
+`localhost`, `127.0.0.1`, and `[::1]` with the configured HTTP port. Browser requests
+with another origin or authority receive `403`; these headers are client-controlled
+and are not authentication, so a non-browser client can spoof them. Stdio is unaffected.
+
+The server still has **no authentication, no TLS, and no access control**. It is designed for local-only use by MCP clients running on the same machine. To explicitly expose a LAN or Tailscale interface, set `MCP_BIND_HOST` to the interface address (for example, `0.0.0.0`) and set `MCP_ALLOWED_HOSTS` to the client authorities you intend to permit. Use a comma-separated hostname, `host:port`, or full `http://`/`https://` origin. A hostname uses the configured HTTP port; a full HTTPS origin defaults to port 443, which is useful behind a TLS reverse proxy. Wildcards, credentials, paths, and forwarded-header overrides are not accepted. Binding to a non-loopback interface exposes unauthenticated read/write tools and must be paired with a secured reverse proxy.
+
+For example:
+
+```bash
+MCP_BIND_HOST=0.0.0.0
+MCP_ALLOWED_HOSTS=100.64.0.12,https://mcp.example.com
+```
+
+The same validation applies to deprecated SSE endpoints. Allowlisting a host does not replace a secured reverse proxy or authentication.
 
 **Do not expose the server to a network without a secured reverse proxy.** Anyone who can reach the HTTP port has full read/write access to your vault.
 

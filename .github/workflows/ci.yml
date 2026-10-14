@@ -49,3 +49,6 @@ jobs:
           test -f manifest.json || (echo "manifest.json not found" && exit 1)
           test -f styles.css || (echo "styles.css not found" && exit 1)
           echo "All required artifacts present"
+
+      - name: Run shipped bundle smoke test
+        run: npm run test:smoke
