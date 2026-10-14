@@ -1,6 +1,6 @@
 import { build } from 'esbuild';
 import { request as httpRequest } from 'node:http';
-import { createServer as createNetServer } from 'node:net';
+import { createServer as createNetServer, type AddressInfo } from 'node:net';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -84,6 +84,16 @@ async function startServer(
   return { server, url: `http://127.0.0.1:${port}` };
 }
 
+function boundHost(server: MCPServer): string {
+  const listeners = server as unknown as {
+    httpServer: { address: () => AddressInfo | string | null } | null;
+    sseServer: { address: () => AddressInfo | string | null } | null;
+  };
+  const address = (listeners.httpServer ?? listeners.sseServer)?.address();
+  if (!address || typeof address === 'string') throw new Error('Server has no TCP address');
+  return address.address;
+}
+
 async function connectHttp(url: string, modern: boolean): Promise<Client> {
   const client = new Client(
     { name: modern ? 'modern-test-client' : 'legacy-test-client', version: '1.0.0' },
@@ -131,6 +141,7 @@ async function rawRequest(
 
 describe('MCP SDK 2.3.1 transport integration', () => {
   const initialAllowedHosts = process.env.MCP_ALLOWED_HOSTS;
+  const initialBindHost = process.env.MCP_BIND_HOST;
 
   beforeEach(() => {
     Logger.setEnabled(false);
@@ -139,6 +150,32 @@ describe('MCP SDK 2.3.1 transport integration', () => {
   afterEach(() => {
     if (initialAllowedHosts === undefined) delete process.env.MCP_ALLOWED_HOSTS;
     else process.env.MCP_ALLOWED_HOSTS = initialAllowedHosts;
+    if (initialBindHost === undefined) delete process.env.MCP_BIND_HOST;
+    else process.env.MCP_BIND_HOST = initialBindHost;
+  });
+
+  it.each(['http', 'sse'] as const)('binds %s to loopback by default', async (transport) => {
+    delete process.env.MCP_BIND_HOST;
+    const { server } = await startServer(transport);
+    try {
+      expect(boundHost(server)).toBe('127.0.0.1');
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('binds to an explicit MCP_BIND_HOST and uses the host allowlist for remote authorities', async () => {
+    process.env.MCP_BIND_HOST = '0.0.0.0';
+    process.env.MCP_ALLOWED_HOSTS = 'mcp.lan.test';
+    const { server, url } = await startServer('http');
+    const port = new URL(url).port;
+    try {
+      expect(boundHost(server)).toBe('0.0.0.0');
+      const allowed = await rawRequest(`${url}/health`, { host: `mcp.lan.test:${port}` });
+      expect(allowed.status).toBe(200);
+    } finally {
+      await server.stop();
+    }
   });
 
   it('allows loopback hosts, rejects bad Host and Origin before body parsing, and accepts no Origin', async () => {

@@ -57,7 +57,8 @@ HTTP supports stateless MCP protocol `2026-07-28` and keeps legacy HTTP/SSE
 clients working. Both protocol eras are supported over stdio. Modern notification
 subscriptions are capped at 16 streams. `delete` and `sync_restore` still require
 legacy elicitation: modern calls refuse these actions until the new multi-round-trip
-confirmation flow is implemented. This never bypasses the confirmation prompt.
+confirmation flow is implemented. Legacy confirmation is client-mediated and is not
+an authentication boundary against a hostile client.
 
 The smoke probe loads the built plugin and lists its tools over real HTTP; it
 also checks modern stateless metadata and legacy confirmation against an in-memory
@@ -174,13 +175,18 @@ obsidi-mcp
 
 ## Security
 
-The HTTP/SSE server validates `Host` and `Origin` before parsing a request or routing it to MCP. By default, only `localhost`, `127.0.0.1`, and `[::1]` with the configured HTTP port are accepted; requests from other hosts or browser origins receive `403`. Stdio is unaffected.
+The HTTP/SSE servers bind to `127.0.0.1` by default and validate `Host` and `Origin`
+before parsing a request or routing it to MCP. The default allowlist accepts only
+`localhost`, `127.0.0.1`, and `[::1]` with the configured HTTP port. Browser requests
+with another origin or authority receive `403`; these headers are client-controlled
+and are not authentication, so a non-browser client can spoof them. Stdio is unaffected.
 
-The server still has **no authentication, no TLS, and no access control**. It is designed for local-only use by MCP clients running on the same machine. To explicitly permit a LAN or Tailscale client, set `MCP_ALLOWED_HOSTS` in the environment before starting Obsidian. Use a comma-separated hostname, `host:port`, or full `http://`/`https://` origin. A hostname uses the configured HTTP port; a full HTTPS origin defaults to port 443, which is useful behind a TLS reverse proxy. Wildcards, credentials, paths, and forwarded-header overrides are not accepted.
+The server still has **no authentication, no TLS, and no access control**. It is designed for local-only use by MCP clients running on the same machine. To explicitly expose a LAN or Tailscale interface, set `MCP_BIND_HOST` to the interface address (for example, `0.0.0.0`) and set `MCP_ALLOWED_HOSTS` to the client authorities you intend to permit. Use a comma-separated hostname, `host:port`, or full `http://`/`https://` origin. A hostname uses the configured HTTP port; a full HTTPS origin defaults to port 443, which is useful behind a TLS reverse proxy. Wildcards, credentials, paths, and forwarded-header overrides are not accepted. Binding to a non-loopback interface exposes unauthenticated read/write tools and must be paired with a secured reverse proxy.
 
 For example:
 
 ```bash
+MCP_BIND_HOST=0.0.0.0
 MCP_ALLOWED_HOSTS=100.64.0.12,https://mcp.example.com
 ```
 

@@ -28,6 +28,11 @@ const log = createLogger('MCPServer');
 const DEFAULT_SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const DEFAULT_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_MAX_SESSIONS = 100;
+const DEFAULT_BIND_HOST = '127.0.0.1';
+
+function getBindHost(): string {
+  return process.env.MCP_BIND_HOST?.trim() || DEFAULT_BIND_HOST;
+}
 
 interface SessionTransport {
   transport: NodeStreamableHTTPServerTransport;
@@ -233,6 +238,7 @@ export class MCPServer {
    */
   private async startHttpServer(): Promise<void> {
     log.debug('Starting HTTP transport', { port: this.config.httpPort });
+    const bindHost = getBindHost();
 
     // Load stale session IDs from before last restart (enables hot reload recovery)
     if (this.config.sessionPersistence) {
@@ -287,9 +293,10 @@ export class MCPServer {
     // Start listening
     await new Promise<void>((resolve, reject) => {
       try {
-        this.httpServer = httpApp.listen(this.config.httpPort, () => {
+        this.httpServer = httpApp.listen(this.config.httpPort, bindHost, () => {
           log.info('HTTP transport started', {
             port: this.config.httpPort,
+            bindHost,
             url: `http://localhost:${this.config.httpPort}/mcp`,
           });
           resolve();
@@ -316,6 +323,7 @@ export class MCPServer {
    */
   private async startSseServer(): Promise<void> {
     log.debug('Starting SSE transport (deprecated)', { port: this.config.httpPort });
+    const bindHost = getBindHost();
 
     const sseApp = express();
     this.sseApp = sseApp;
@@ -382,9 +390,10 @@ export class MCPServer {
     // Start listening
     await new Promise<void>((resolve, reject) => {
       try {
-        this.sseServer = sseApp.listen(this.config.httpPort, () => {
+        this.sseServer = sseApp.listen(this.config.httpPort, bindHost, () => {
           log.info('SSE transport started', {
             port: this.config.httpPort,
+            bindHost,
             sseUrl: `http://localhost:${this.config.httpPort}/sse`,
             messagesUrl: `http://localhost:${this.config.httpPort}/messages`,
           });
