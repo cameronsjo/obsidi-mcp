@@ -1,4 +1,4 @@
-import type { ElicitationContent, ElicitResult } from '@modelcontextprotocol/sdk/types.js';
+import type { ElicitRequestFormParams, ElicitResult } from '@modelcontextprotocol/server';
 
 export type MCPTransportType = 'stdio' | 'http' | 'sse' | 'both';
 
@@ -20,7 +20,7 @@ export interface ToolDefinition {
  * Carries MCP capabilities like elicitation without coupling tools to MCP types.
  */
 export interface ToolExecutionContext {
-  elicitInput?: (params: { mode: string; message: string; requestedSchema: ElicitationContent }) => Promise<ElicitResult>;
+  elicitInput?: (params: ElicitRequestFormParams) => Promise<ElicitResult>;
 }
 
 /**
