@@ -1,9 +1,10 @@
 import { build } from 'esbuild';
+import { request as httpRequest } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   Client,
   SSEClientTransport,
@@ -96,9 +97,148 @@ async function closeClient(client: Client): Promise<void> {
   await client.close().catch(() => {});
 }
 
+async function rawRequest(
+  url: string,
+  headers: Record<string, string> = {},
+  body?: string,
+): Promise<{ status: number; text: string }> {
+  const target = new URL(url);
+  const requestHeaders = { ...headers };
+  if (body !== undefined && !Object.keys(requestHeaders).some((key) => key.toLowerCase() === 'content-length')) {
+    requestHeaders['content-length'] = String(Buffer.byteLength(body));
+  }
+  return await new Promise((resolve, reject) => {
+    const request = httpRequest({
+      hostname: target.hostname,
+      port: Number(target.port),
+      path: `${target.pathname}${target.search}`,
+      method: body === undefined ? 'GET' : 'POST',
+      headers: requestHeaders,
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk: Buffer) => chunks.push(chunk));
+      response.on('end', () => resolve({
+        status: response.statusCode ?? 0,
+        text: Buffer.concat(chunks).toString('utf8'),
+      }));
+    });
+    request.on('error', reject);
+    if (headers.host !== undefined) expect(request.getHeader('host')).toBe(headers.host);
+    if (body !== undefined) request.write(body);
+    request.end();
+  });
+}
+
 describe('MCP SDK 2.3.1 transport integration', () => {
+  const initialAllowedHosts = process.env.MCP_ALLOWED_HOSTS;
+
   beforeEach(() => {
     Logger.setEnabled(false);
+  });
+
+  afterEach(() => {
+    if (initialAllowedHosts === undefined) delete process.env.MCP_ALLOWED_HOSTS;
+    else process.env.MCP_ALLOWED_HOSTS = initialAllowedHosts;
+  });
+
+  it('allows loopback hosts, rejects bad Host and Origin before body parsing, and accepts no Origin', async () => {
+    const { server, url } = await startServer('http');
+    const port = new URL(url).port;
+    try {
+      for (const host of [`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]) {
+        await expect(rawRequest(`${url}/health`, { host })).resolves.toMatchObject({ status: 200 });
+      }
+
+      const noOrigin = await rawRequest(`${url}/health`, { host: `127.0.0.1:${port}` });
+      expect(noOrigin.status).toBe(200);
+
+      const badHost = await rawRequest(
+        `${url}/mcp`,
+        { host: `attacker.example:${port}`, 'content-type': 'application/json' },
+        '{not-json',
+      );
+      expect(badHost.status).toBe(403);
+
+      const crossOriginHost = `127.0.0.1:${port}`;
+      const crossOriginCases = [
+        `http://127.0.0.1:${Number(port) + 1}`,
+        `https://127.0.0.1:${port}`,
+        `http://attacker.example:${port}`,
+      ];
+      for (const origin of crossOriginCases) {
+        const denied = await rawRequest(`${url}/mcp`, {
+          host: crossOriginHost,
+          origin,
+          'content-type': 'application/json',
+        }, '{not-json');
+        expect(denied.status).toBe(403);
+      }
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('applies Host and Origin validation to deprecated SSE health and messages routes', async () => {
+    const { server, url } = await startServer('sse');
+    const port = new URL(url).port;
+    try {
+      const allowed = await rawRequest(`${url}/health`, { host: `127.0.0.1:${port}` });
+      expect(allowed.status).toBe(200);
+
+      const deniedHealth = await rawRequest(`${url}/health`, { host: `attacker.example:${port}` });
+      expect(deniedHealth.status).toBe(403);
+
+      const deniedMessages = await rawRequest(
+        `${url}/messages?sessionId=invalid`,
+        { host: `127.0.0.1:${port}`, origin: `http://attacker.example:${port}`, 'content-type': 'application/json' },
+        '{not-json',
+      );
+      expect(deniedMessages.status).toBe(403);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('admits an explicit host and matching origin from MCP_ALLOWED_HOSTS', async () => {
+    process.env.MCP_ALLOWED_HOSTS = 'mcp.lan.test';
+    const { server, url } = await startServer('http');
+    const port = new URL(url).port;
+    try {
+      const allowed = await rawRequest(`${url}/health`, {
+        host: `mcp.lan.test:${port}`,
+        origin: `http://mcp.lan.test:${port}`,
+      });
+      expect(allowed.status).toBe(200);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('admits an explicit HTTPS origin with its reverse-proxy default port', async () => {
+    process.env.MCP_ALLOWED_HOSTS = 'https://mcp.example.test';
+    const { server, url } = await startServer('http');
+    try {
+      const allowed = await rawRequest(`${url}/health`, {
+        host: 'mcp.example.test',
+        origin: 'https://mcp.example.test',
+      });
+      expect(allowed.status).toBe(200);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('fails closed when MCP_ALLOWED_HOSTS contains an invalid entry', async () => {
+    process.env.MCP_ALLOWED_HOSTS = '*';
+    const port = await freePort();
+    const server = new MCPServer(
+      makeVaultResources() as never,
+      makeToolDefinitions,
+      { name: 'invalid-allowlist', version: 'test', transport: 'http', httpPort: port },
+    );
+    await expect(server.start()).rejects.toThrow(/MCP_ALLOWED_HOSTS/);
+    expect(server.isServerRunning()).toBe(false);
+    await server.stop();
   });
 
   it('serves modern stateless HTTP and retained legacy HTTP with real SDK clients', async () => {

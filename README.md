@@ -174,7 +174,17 @@ obsidi-mcp
 
 ## Security
 
-The HTTP/SSE server binds to `localhost` with **no authentication, no TLS, and no access control**. It is designed for local-only use by MCP clients running on the same machine.
+The HTTP/SSE server validates `Host` and `Origin` before parsing a request or routing it to MCP. By default, only `localhost`, `127.0.0.1`, and `[::1]` with the configured HTTP port are accepted; requests from other hosts or browser origins receive `403`. Stdio is unaffected.
+
+The server still has **no authentication, no TLS, and no access control**. It is designed for local-only use by MCP clients running on the same machine. To explicitly permit a LAN or Tailscale client, set `MCP_ALLOWED_HOSTS` in the environment before starting Obsidian. Use a comma-separated hostname, `host:port`, or full `http://`/`https://` origin. A hostname uses the configured HTTP port; a full HTTPS origin defaults to port 443, which is useful behind a TLS reverse proxy. Wildcards, credentials, paths, and forwarded-header overrides are not accepted.
+
+For example:
+
+```bash
+MCP_ALLOWED_HOSTS=100.64.0.12,https://mcp.example.com
+```
+
+The same validation applies to deprecated SSE endpoints. Allowlisting a host does not replace a secured reverse proxy or authentication.
 
 **Do not expose the server to a network without a secured reverse proxy.** Anyone who can reach the HTTP port has full read/write access to your vault.
 

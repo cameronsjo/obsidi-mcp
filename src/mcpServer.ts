@@ -19,6 +19,7 @@ import { SSEServerTransport } from '@modelcontextprotocol/server-legacy/sse';
 import express, { type Express, type Request, type Response } from 'express';
 import type { Server as HttpServer } from 'http';
 import type { ToolDefinition, ToolExecutionContext, MCPServerConfig } from './types';
+import { httpSecurityMiddleware } from './httpSecurity';
 import type { VaultResources } from './vaultResources';
 import { createLogger, Logger, type LogEntry, type LogLevel } from './logger';
 
@@ -255,6 +256,7 @@ export class MCPServer {
 
     const httpApp = express();
     this.httpApp = httpApp;
+    httpApp.use(httpSecurityMiddleware(this.config.httpPort));
     // Keep the existing 100 KiB Express JSON boundary. The SDK adapter also
     // receives the parsed body, so its larger internal default never bypasses it.
     httpApp.use(express.json({ limit: '100kb' }));
@@ -317,6 +319,7 @@ export class MCPServer {
 
     const sseApp = express();
     this.sseApp = sseApp;
+    sseApp.use(httpSecurityMiddleware(this.config.httpPort));
     sseApp.use(express.json({ limit: '100kb' }));
 
     // Health check endpoint
