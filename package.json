@@ -7,8 +7,8 @@
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production",
     "test": "vitest run",
-    "test:smoke": "node scripts/smoke-sdk.cjs",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:smoke": "node scripts/smoke-sdk.cjs"
   },
   "keywords": [
     "obsidian",
@@ -19,20 +19,19 @@
   "author": "Cameron",
   "license": "PolyForm-Noncommercial-1.0.0",
   "devDependencies": {
-    "@modelcontextprotocol/client": "^2.3.1",
-    "@modelcontextprotocol/core": "^2.3.1",
     "@types/express": "^5.0.0",
     "@types/node": "^22.19.7",
     "builtin-modules": "^4.0.0",
-    "esbuild": "^0.27.2",
-    "obsidian": "^1.7.2",
+    "esbuild": "^0.28.2",
+    "obsidian": "^1.14.4",
     "typescript": "^5.7.2",
-    "vitest": "^4.0.16"
+    "vitest": "^4.1.0",
+    "@modelcontextprotocol/client": "^2.3.1"
   },
   "dependencies": {
-    "@modelcontextprotocol/node": "^2.1.1",
+    "express": "^5.2.1",
     "@modelcontextprotocol/server": "^2.3.1",
-    "@modelcontextprotocol/server-legacy": "^2.3.1",
-    "express": "^5.2.1"
+    "@modelcontextprotocol/node": "^2.1.1",
+    "@modelcontextprotocol/server-legacy": "^2.3.1"
   }
 }
