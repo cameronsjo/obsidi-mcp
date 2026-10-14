@@ -14,7 +14,7 @@ Expose Obsidian vault tools via Model Context Protocol (MCP) server.
 ## Requirements
 
 - Obsidian Desktop (not mobile - uses Node.js features)
-- Node.js 18+
+- Node.js 20+ (required by MCP SDK v2)
 - For CLI bridge: Obsidian CLI v1.12+
 
 ## Installation
@@ -36,6 +36,9 @@ cd obsidi-mcp
 npm install
 npm run build
 
+# Exercise the delivered main.js bundle with an in-memory Obsidian host
+npm run test:smoke
+
 # For development with auto-rebuild
 npm run dev
 ```
@@ -49,6 +52,16 @@ ln -sfn /path/to/obsidi-mcp /path/to/vault/.obsidian/plugins/obsidi-mcp
 ```
 
 ## Usage
+
+HTTP supports stateless MCP protocol `2026-07-28` and keeps legacy HTTP/SSE
+clients working. Both protocol eras are supported over stdio. Modern notification
+subscriptions are capped at 16 streams. `delete` and `sync_restore` still require
+legacy elicitation: modern calls refuse these actions until the new multi-round-trip
+confirmation flow is implemented. This never bypasses the confirmation prompt.
+
+The smoke probe loads the built plugin and lists its tools over real HTTP; it
+also checks modern stateless metadata and legacy confirmation against an in-memory
+vault. It does not replace testing inside the Obsidian application.
 
 1. Enable the plugin in Obsidian Settings > Community Plugins
 2. Configure transport (stdio, HTTP, or SSE) in plugin settings
