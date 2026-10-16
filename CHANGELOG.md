@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.0](https://github.com/cameronsjo/obsidi-mcp/compare/0.1.0...0.2.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **mcp:** HTTP and SSE no longer bind all interfaces by default. Set MCP_BIND_HOST and MCP_ALLOWED_HOSTS together for intentional LAN or Tailscale exposure, and use a secured reverse proxy for authentication.
+
+### Features
+
+* add Claude Code plugin with onboarding skill ([09fd4f3](https://github.com/cameronsjo/obsidi-mcp/commit/09fd4f3f897128db84594f46f26848c830a65b1d))
+* initial obsidi-mcp plugin — standalone MCP server for Obsidian ([3e0c00e](https://github.com/cameronsjo/obsidi-mcp/commit/3e0c00e74506fb867a7a82fd042bcabd9550d0b9))
+* **mcp:** bind network transports to loopback ([2121e3c](https://github.com/cameronsjo/obsidi-mcp/commit/2121e3c71b5d60d179d33780fbdaa9f54e5de76b))
+* migrate obsidi-mcp to MCP SDK v2 ([fd15751](https://github.com/cameronsjo/obsidi-mcp/commit/fd157511442b46539c3f1e0883f884fb8dfeadbf))
+
+
+### Bug Fixes
+
+* move TFile and TFolder to value imports ([9231724](https://github.com/cameronsjo/obsidi-mcp/commit/9231724bd9cdcc66b30165a88e29d4eb11938ba0)), closes [#2](https://github.com/cameronsjo/obsidi-mcp/issues/2)
+* **skills:** strip the plugin prefix from the frontmatter name ([#5](https://github.com/cameronsjo/obsidi-mcp/issues/5)) ([a042579](https://github.com/cameronsjo/obsidi-mcp/commit/a04257933f469dd529dc18b33e21d9becc775d67))
+* validate HTTP host and origin headers ([de10668](https://github.com/cameronsjo/obsidi-mcp/commit/de1066800c7a113ec28546d3cb7a8111e316300d))
+
 ## 0.1.0 (2026-02-12)
 
 ### Features

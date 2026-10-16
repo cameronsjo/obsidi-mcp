@@ -1,6 +1,6 @@
 {
   "name": "obsidi-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Expose Obsidian vault tools via Model Context Protocol (MCP) server",
   "main": "main.js",
   "scripts": {
